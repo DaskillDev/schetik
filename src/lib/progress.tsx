@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import { MAX_LEVEL, starsFor, type Topic } from './math';
+import { MAX_LEVEL, starsFor, type Question, type Topic } from './math';
 import { HATS, type HatId } from './hats';
+import { useProfiles } from './profiles';
 import { CHEST_BONUS, questsFor } from './quests';
+import { DECOR, WALLPAPERS, type DecorId, type WallpaperId } from './room';
 import { setSoundEnabled } from './sound';
-
-const STORAGE_KEY = 'schetik/progress/v1';
+import { setVoiceEnabled } from './speech';
 
 export type DayStats = {
   answered: number;
@@ -20,7 +21,14 @@ export type DayStats = {
   /** «Молния» games played and best score that day. */
   blitz?: number;
   blitzBest?: number;
+  /** [answered, correct] per question kind — for the parent report. */
+  kinds?: Record<string, [number, number]>;
 };
+
+/** A question the child got wrong; it comes back in «Работа над ошибками» when `due`. */
+export type Mistake = { q: Question; due: string; box: number; misses: number };
+
+export type Answer = { q: Question; right: boolean };
 
 export type Progress = {
   coins: number;
@@ -35,9 +43,20 @@ export type Progress = {
   lastDay: string | null;
   days: Record<string, DayStats>;
   sound: boolean;
+  voice: boolean;
   blitzBest: number;
   /** Quests claimed today (reset when the day changes). */
   quests: { day: string; claimed: string[] };
+  mistakes: Mistake[];
+  decor: DecorId[];
+  wallpapers: WallpaperId[];
+  wallpaper: WallpaperId;
+  gamesBest: Record<string, number>;
+  /** Daily goal and optional daily limit, in minutes (0 = no limit). */
+  goalMin: number;
+  limitMin: number;
+  /** Day on which a parent allowed playing past the limit. */
+  restOverride: string;
 };
 
 const INITIAL: Progress = {
@@ -51,11 +70,21 @@ const INITIAL: Progress = {
   lastDay: null,
   days: {},
   sound: true,
+  voice: true,
   blitzBest: 0,
   quests: { day: '', claimed: [] },
+  mistakes: [],
+  decor: [],
+  wallpapers: ['peach'],
+  wallpaper: 'peach',
+  gamesBest: {},
+  goalMin: 10,
+  limitMin: 0,
+  restOverride: '',
 };
 
 const EMPTY_DAY: DayStats = { answered: 0, correct: 0, seconds: 0, rounds: 0 };
+const MAX_MISTAKES = 60;
 
 export type RoundResult = {
   stars: number;
@@ -75,21 +104,36 @@ export type BlitzResult = {
   streakGrew: boolean;
 };
 
+export type GameResult = { coinsEarned: number; best: number; newRecord: boolean; streak: number; streakGrew: boolean };
+
+type Settings = Pick<Progress, 'voice' | 'goalMin' | 'limitMin'>;
+
 type Ctx = {
   progress: Progress;
   finishRound: (
     topic: Topic,
     level: number,
-    correct: number,
-    total: number,
+    answers: Answer[],
     seconds: number,
     combo: { bonus: number; best: number },
   ) => RoundResult;
-  finishBlitz: (score: number, answered: number, seconds: number, bestCombo: number) => BlitzResult;
+  finishBlitz: (answers: Answer[], seconds: number, bestCombo: number) => BlitzResult;
+  finishReview: (answers: Answer[], seconds: number) => { coinsEarned: number; cleared: number };
+  /** `record` is the game's score; `lowerIsBetter` for times. */
+  finishGame: (
+    id: string,
+    r: { answered: number; correct: number; seconds: number; coins: number; record: number; lowerIsBetter?: boolean },
+  ) => GameResult;
   /** Returns the coins received (quest reward + chest bonus) or null if it can't be claimed. */
   claimQuest: (id: string) => { reward: number; chest: number } | null;
   buyHat: (id: HatId) => boolean;
   wearHat: (id: HatId) => void;
+  buyDecor: (id: DecorId) => boolean;
+  buyWallpaper: (id: WallpaperId) => boolean;
+  setWallpaper: (id: WallpaperId) => void;
+  setSettings: (patch: Partial<Settings>) => void;
+  /** A parent lets the child keep playing today despite the limit. */
+  allowMoreToday: () => void;
   reset: () => void;
   toggleSound: () => void;
   totalStars: number;
@@ -97,6 +141,9 @@ type Ctx = {
   liveStreak: number;
   today: DayStats;
   claimedToday: string[];
+  dueMistakes: Mistake[];
+  /** The daily limit is reached and no parent override for today. */
+  overLimit: boolean;
 };
 
 const ProgressContext = createContext<Ctx | null>(null);
@@ -108,54 +155,101 @@ export function dayKey(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
-function yesterdayKey(): string {
+export function daysFromNow(n: number): string {
   const d = new Date();
-  d.setDate(d.getDate() - 1);
+  d.setDate(d.getDate() + n);
   return dayKey(d);
 }
 
 /** Streak after playing today. */
 function nextStreak(p: Progress) {
   if (p.lastDay === dayKey()) return { streak: p.streak, streakGrew: false, bestStreak: p.bestStreak };
-  const streak = p.lastDay === yesterdayKey() ? p.streak + 1 : 1;
+  const streak = p.lastDay === daysFromNow(-1) ? p.streak + 1 : 1;
   return { streak, streakGrew: true, bestStreak: Math.max(p.bestStreak, streak) };
 }
 
+/** Today's stats with these answers added. */
+function addAnswers(day: DayStats, answers: Answer[], seconds: number): DayStats {
+  const kinds = { ...day.kinds };
+  for (const a of answers) {
+    const [n, c] = kinds[a.q.kind] ?? [0, 0];
+    kinds[a.q.kind] = [n + 1, c + (a.right ? 1 : 0)];
+  }
+  return {
+    ...day,
+    answered: day.answered + answers.length,
+    correct: day.correct + answers.filter((a) => a.right).length,
+    seconds: day.seconds + Math.round(seconds),
+    kinds,
+  };
+}
+
+/**
+ * Spaced repetition, kept simple: a wrong answer comes back tomorrow;
+ * answering it right twice (on different days) clears it.
+ */
+function updateMistakes(list: Mistake[], answers: Answer[]): { list: Mistake[]; cleared: number } {
+  const map = new Map(list.map((m) => [m.q.key, m]));
+  let cleared = 0;
+  for (const a of answers) {
+    const m = map.get(a.q.key);
+    if (!a.right) {
+      map.set(a.q.key, { q: a.q, due: daysFromNow(1), box: 0, misses: (m?.misses ?? 0) + 1 });
+    } else if (m && m.due <= dayKey()) {
+      if (m.box + 1 >= 2) {
+        map.delete(a.q.key);
+        cleared++;
+      } else {
+        map.set(a.q.key, { ...m, box: m.box + 1, due: daysFromNow(3) });
+      }
+    }
+  }
+  return { list: [...map.values()].slice(-MAX_MISTAKES), cleared };
+}
+
 export function ProgressProvider({ children }: { children: ReactNode }) {
+  const { storageKey } = useProfiles();
   const [progress, setProgress] = useState<Progress>(INITIAL);
   const [loaded, setLoaded] = useState(false);
   // Synchronous mirror so actions can compute a result without waiting for a render.
   const ref = useRef(progress);
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
+    AsyncStorage.getItem(storageKey)
       .then((raw) => {
+        // Another child may have been active before: always replace the whole state.
+        let next = INITIAL;
         if (raw) {
           const saved = JSON.parse(raw) as Partial<Progress>;
-          const merged: Progress = {
+          next = {
             ...INITIAL,
             ...saved,
             unlocked: { ...INITIAL.unlocked, ...saved.unlocked },
             quests: saved.quests ?? INITIAL.quests,
             bestStreak: Math.max(saved.bestStreak ?? 0, saved.streak ?? 0),
           };
-          ref.current = merged;
-          setProgress(merged);
         }
+        ref.current = next;
+        setProgress(next);
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
-  }, []);
+  }, [storageKey]);
 
-  const commit = useCallback((next: Progress) => {
-    ref.current = next;
-    setProgress(next);
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
-  }, []);
+  const commit = useCallback(
+    (next: Progress) => {
+      ref.current = next;
+      setProgress(next);
+      AsyncStorage.setItem(storageKey, JSON.stringify(next)).catch(() => {});
+    },
+    [storageKey],
+  );
 
   const finishRound = useCallback<Ctx['finishRound']>(
-    (topic, level, correct, total, seconds, combo) => {
+    (topic, level, answers, seconds, combo) => {
       const p = ref.current;
+      const correct = answers.filter((a) => a.right).length;
+      const total = answers.length;
       const stars = starsFor(correct, total);
       const key = `${topic}-${level}`;
       const today = dayKey();
@@ -163,7 +257,7 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
 
       const unlockedNext = stars >= 2 && level === p.unlocked[topic] && level < MAX_LEVEL;
       const coinsEarned = correct + stars * 2 + combo.bonus + (s.streakGrew ? 5 : 0);
-      const day = p.days[today] ?? EMPTY_DAY;
+      const day = addAnswers(p.days[today] ?? EMPTY_DAY, answers, seconds);
 
       commit({
         ...p,
@@ -172,13 +266,11 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
         best: { ...p.best, [key]: Math.max(p.best[key] ?? 0, stars) },
         unlocked: unlockedNext ? { ...p.unlocked, [topic]: level + 1 } : p.unlocked,
         lastDay: today,
+        mistakes: updateMistakes(p.mistakes, answers).list,
         days: {
           ...p.days,
           [today]: {
             ...day,
-            answered: day.answered + total,
-            correct: day.correct + correct,
-            seconds: day.seconds + Math.round(seconds),
             rounds: day.rounds + 1,
             perfect: (day.perfect ?? 0) + (stars === 3 ? 1 : 0),
             combo: Math.max(day.combo ?? 0, combo.best),
@@ -192,13 +284,14 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
   );
 
   const finishBlitz = useCallback<Ctx['finishBlitz']>(
-    (score, answered, seconds, bestCombo) => {
+    (answers, seconds, bestCombo) => {
       const p = ref.current;
       const today = dayKey();
       const s = nextStreak(p);
+      const score = answers.filter((a) => a.right).length;
       const newRecord = score > p.blitzBest;
       const coinsEarned = score + (newRecord ? 5 : 0) + (s.streakGrew ? 5 : 0);
-      const day = p.days[today] ?? EMPTY_DAY;
+      const day = addAnswers(p.days[today] ?? EMPTY_DAY, answers, seconds);
 
       commit({
         ...p,
@@ -206,13 +299,11 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
         coins: p.coins + coinsEarned,
         blitzBest: Math.max(p.blitzBest, score),
         lastDay: today,
+        mistakes: updateMistakes(p.mistakes, answers).list,
         days: {
           ...p.days,
           [today]: {
             ...day,
-            answered: day.answered + answered,
-            correct: day.correct + score,
-            seconds: day.seconds + Math.round(seconds),
             combo: Math.max(day.combo ?? 0, bestCombo),
             blitz: (day.blitz ?? 0) + 1,
             blitzBest: Math.max(day.blitzBest ?? 0, score),
@@ -221,6 +312,58 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
       });
 
       return { score, coinsEarned, best: Math.max(p.blitzBest, score), newRecord, streak: s.streak, streakGrew: s.streakGrew };
+    },
+    [commit],
+  );
+
+  const finishReview = useCallback<Ctx['finishReview']>(
+    (answers, seconds) => {
+      const p = ref.current;
+      const today = dayKey();
+      const s = nextStreak(p);
+      const { list, cleared } = updateMistakes(p.mistakes, answers);
+      const coinsEarned = answers.filter((a) => a.right).length * 2 + (s.streakGrew ? 5 : 0);
+      const day = addAnswers(p.days[today] ?? EMPTY_DAY, answers, seconds);
+      commit({
+        ...p,
+        ...s,
+        coins: p.coins + coinsEarned,
+        lastDay: today,
+        mistakes: list,
+        days: { ...p.days, [today]: { ...day, rounds: day.rounds + 1 } },
+      });
+      return { coinsEarned, cleared };
+    },
+    [commit],
+  );
+
+  const finishGame = useCallback<Ctx['finishGame']>(
+    (id, r) => {
+      const p = ref.current;
+      const today = dayKey();
+      const s = nextStreak(p);
+      const prev = p.gamesBest[id];
+      const newRecord = prev === undefined || (r.lowerIsBetter ? r.record < prev : r.record > prev);
+      const best = newRecord ? r.record : prev;
+      const coinsEarned = r.coins + (s.streakGrew ? 5 : 0);
+      const day = p.days[today] ?? EMPTY_DAY;
+      commit({
+        ...p,
+        ...s,
+        coins: p.coins + coinsEarned,
+        lastDay: today,
+        gamesBest: { ...p.gamesBest, [id]: best },
+        days: {
+          ...p.days,
+          [today]: {
+            ...day,
+            answered: day.answered + r.answered,
+            correct: day.correct + r.correct,
+            seconds: day.seconds + Math.round(r.seconds),
+          },
+        },
+      });
+      return { coinsEarned, best, newRecord, streak: s.streak, streakGrew: s.streakGrew };
     },
     [commit],
   );
@@ -260,8 +403,44 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
     [commit],
   );
 
-  // Reset keeps the sound setting: it's a device preference, not progress.
-  const reset = useCallback(() => commit({ ...INITIAL, sound: ref.current.sound }), [commit]);
+  const buyDecor = useCallback(
+    (id: DecorId) => {
+      const p = ref.current;
+      const item = DECOR.find((d) => d.id === id);
+      if (!item || p.decor.includes(id) || p.coins < item.price) return false;
+      commit({ ...p, coins: p.coins - item.price, decor: [...p.decor, id] });
+      return true;
+    },
+    [commit],
+  );
+
+  const buyWallpaper = useCallback(
+    (id: WallpaperId) => {
+      const p = ref.current;
+      const w = WALLPAPERS.find((x) => x.id === id);
+      if (!w || p.wallpapers.includes(id) || p.coins < w.price) return false;
+      commit({ ...p, coins: p.coins - w.price, wallpapers: [...p.wallpapers, id], wallpaper: id });
+      return true;
+    },
+    [commit],
+  );
+
+  const setWallpaper = useCallback(
+    (id: WallpaperId) => {
+      const p = ref.current;
+      if (p.wallpapers.includes(id)) commit({ ...p, wallpaper: id });
+    },
+    [commit],
+  );
+
+  const setSettings = useCallback((patch: Partial<Settings>) => commit({ ...ref.current, ...patch }), [commit]);
+  const allowMoreToday = useCallback(() => commit({ ...ref.current, restOverride: dayKey() }), [commit]);
+
+  // Reset keeps device-like preferences (sound, voice, limits): it's progress that goes.
+  const reset = useCallback(() => {
+    const p = ref.current;
+    commit({ ...INITIAL, sound: p.sound, voice: p.voice, goalMin: p.goalMin, limitMin: p.limitMin });
+  }, [commit]);
 
   const toggleSound = useCallback(() => {
     const p = ref.current;
@@ -269,26 +448,54 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
   }, [commit]);
 
   useEffect(() => setSoundEnabled(progress.sound), [progress.sound]);
+  useEffect(() => setVoiceEnabled(progress.voice), [progress.voice]);
 
   const value = useMemo<Ctx>(() => {
     const todayKey = dayKey();
+    const today = progress.days[todayKey] ?? EMPTY_DAY;
     const totalStars = Object.values(progress.best).reduce((s, n) => s + n, 0);
-    const alive = progress.lastDay === todayKey || progress.lastDay === yesterdayKey();
+    const alive = progress.lastDay === todayKey || progress.lastDay === daysFromNow(-1);
     return {
       progress,
       finishRound,
       finishBlitz,
+      finishReview,
+      finishGame,
       claimQuest,
       buyHat,
       wearHat,
+      buyDecor,
+      buyWallpaper,
+      setWallpaper,
+      setSettings,
+      allowMoreToday,
       reset,
       toggleSound,
       totalStars,
       liveStreak: alive ? progress.streak : 0,
-      today: progress.days[todayKey] ?? EMPTY_DAY,
+      today,
       claimedToday: progress.quests.day === todayKey ? progress.quests.claimed : [],
+      dueMistakes: progress.mistakes.filter((m) => m.due <= todayKey),
+      overLimit:
+        progress.limitMin > 0 && today.seconds >= progress.limitMin * 60 && progress.restOverride !== todayKey,
     };
-  }, [progress, finishRound, finishBlitz, claimQuest, buyHat, wearHat, reset, toggleSound]);
+  }, [
+    progress,
+    finishRound,
+    finishBlitz,
+    finishReview,
+    finishGame,
+    claimQuest,
+    buyHat,
+    wearHat,
+    buyDecor,
+    buyWallpaper,
+    setWallpaper,
+    setSettings,
+    allowMoreToday,
+    reset,
+    toggleSound,
+  ]);
 
   if (!loaded) return null;
   return <ProgressContext.Provider value={value}>{children}</ProgressContext.Provider>;

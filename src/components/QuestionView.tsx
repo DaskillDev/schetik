@@ -4,12 +4,31 @@ import { C } from '@/components/ui';
 import { fitFont, type Question } from '@/lib/math';
 
 /** The question: an expression, or pictures to count. */
-export function QuestionCard({ q, revealed, counter }: { q: Question; revealed: boolean; counter?: string }) {
+export function QuestionCard({
+  q,
+  revealed,
+  counter,
+  verdict,
+  onRepeat,
+}: {
+  q: Question;
+  revealed: boolean;
+  counter?: string;
+  /** Colours the card after answering. */
+  verdict?: 'good' | 'bad';
+  /** Shows a 🔈 button that reads the question again. */
+  onRepeat?: () => void;
+}) {
   const text = revealed ? q.reveal : q.text;
   const total = q.groups?.reduce((s, g) => s + g.n, 0) ?? 0;
   const emojiSize = total <= 10 ? 34 : 26;
   return (
-    <View style={s.card}>
+    <View style={[s.card, verdict && { borderColor: verdict === 'good' ? C.good : C.bad }]}>
+      {onRepeat ? (
+        <Pressable accessibilityRole="button" accessibilityLabel="Прочитать вслух" onPress={onRepeat} hitSlop={10} style={s.repeat}>
+          <Text style={{ fontSize: 18 }}>🔈</Text>
+        </Pressable>
+      ) : null}
       {counter ? <Text style={s.counter}>{counter}</Text> : null}
       {q.groups ? (
         <View style={s.groups} accessibilityLabel={q.groups.map((g) => `${g.n} ${g.emoji}`).join(' и ')}>
@@ -88,11 +107,12 @@ const s = StyleSheet.create({
     paddingVertical: 18,
     paddingHorizontal: 16,
     alignItems: 'center',
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: C.line,
     gap: 6,
   },
   counter: { fontSize: 15, fontWeight: '800', color: C.muted },
+  repeat: { position: 'absolute', top: 10, right: 12, zIndex: 1 },
   groups: { alignItems: 'center', gap: 6 },
   emoji: { textAlign: 'center' },
   expr: { fontWeight: '900', color: C.ink, textAlign: 'center' },

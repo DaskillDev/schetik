@@ -1,8 +1,8 @@
-import Svg, { Circle, Ellipse, G, Path, Polygon, Rect } from 'react-native-svg';
+import Svg, { Circle, Ellipse, G, Path, Polygon, Rect, Text as SvgText } from 'react-native-svg';
 
 import type { HatId } from '@/lib/hats';
 
-export type Mood = 'happy' | 'cheer' | 'think' | 'oops';
+export type Mood = 'happy' | 'cheer' | 'think' | 'oops' | 'sleep';
 
 const BODY = '#FF9F43';
 const BODY_DARK = '#E8822A';
@@ -53,6 +53,21 @@ export function Mascot({ size = 160, mood = 'happy', hat = 'none' }: { size?: nu
 }
 
 function Face({ mood }: { mood: Mood }) {
+  if (mood === 'sleep') {
+    return (
+      <G>
+        <Path d="M68 110 Q78 118 88 110" stroke={INK} strokeWidth={5} fill="none" strokeLinecap="round" />
+        <Path d="M112 110 Q122 118 132 110" stroke={INK} strokeWidth={5} fill="none" strokeLinecap="round" />
+        <Ellipse cx={100} cy={134} rx={6} ry={4} fill={INK} />
+        <SvgText x={150} y={58} fontSize={22} fontWeight="900" fill="#7E8CC9">
+          z
+        </SvgText>
+        <SvgText x={166} y={36} fontSize={30} fontWeight="900" fill="#7E8CC9">
+          Z
+        </SvgText>
+      </G>
+    );
+  }
   if (mood === 'cheer') {
     return (
       <G>

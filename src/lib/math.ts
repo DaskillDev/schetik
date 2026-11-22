@@ -15,6 +15,16 @@ export const TOPICS: { id: Topic; title: string; sign: string; color: string; hi
   { id: 'mix', title: 'Всё вместе', sign: '★', color: '#E91E63', hint: 'Все задания сразу' },
 ];
 
+export const KIND_NAMES: Record<Kind, string> = {
+  count: 'Счёт предметов',
+  add: 'Сложение',
+  sub: 'Вычитание',
+  mul: 'Умножение',
+  div: 'Деление',
+  missing: 'Окошко',
+  compare: 'Сравнение',
+};
+
 export const LEVEL_NAMES: Record<Topic, string[]> = {
   count: ['до 5', 'до 10', 'до 15', 'до 20', 'две группы'],
   add: ['до 10', 'до 20', 'до 50', 'до 100', 'до 1000'],
@@ -26,7 +36,11 @@ export const LEVEL_NAMES: Record<Topic, string[]> = {
   mix: ['лёгкий', 'простой', 'средний', 'сложный', 'мастер'],
 };
 
+/** What a question practises — used for the parent report. */
+export type Kind = Exclude<Topic, 'mix'>;
+
 export type Question = {
+  kind: Kind;
   /** Used to avoid repeats inside one round. */
   key: string;
   /** Shown while the child thinks, e.g. "7 + ? = 12". */
@@ -127,7 +141,8 @@ function makeExpr(op: Op, level: number): Expr {
 function exprQuestion(op: Op, level: number): Question {
   const e = makeExpr(op, level);
   const text = `${fmt(e)} = ?`;
-  return { key: text, text, reveal: `${fmt(e)} = ${e.answer}`, answer: String(e.answer), options: makeOptions(e.answer, op, e.b, level) };
+  const kind: Kind = op === '+' ? 'add' : op === '−' ? 'sub' : op === '×' ? 'mul' : 'div';
+  return { kind, key: text, text, reveal: `${fmt(e)} = ${e.answer}`, answer: String(e.answer), options: makeOptions(e.answer, op, e.b, level) };
 }
 
 // «Окошко»: one of the numbers is hidden.
@@ -140,7 +155,7 @@ function missingQuestion(level: number): Question {
   const hideA = Math.random() < 0.5;
   const hidden = hideA ? e.a : e.b;
   const text = `${hideA ? '?' : e.a} ${e.op} ${hideA ? e.b : '?'} = ${e.answer}`;
-  return { key: text, text, reveal: `${fmt(e)} = ${e.answer}`, answer: String(hidden), options: makeOptions(hidden, e.op, 0, level) };
+  return { kind: 'missing', key: text, text, reveal: `${fmt(e)} = ${e.answer}`, answer: String(hidden), options: makeOptions(hidden, e.op, 0, level) };
 }
 
 // «Сравни»: <, = or >.
@@ -201,7 +216,7 @@ function compareQuestion(level: number): Question {
   }
   const sign = lv < rv ? '<' : lv > rv ? '>' : '=';
   const text = `${left} ◯ ${right}`;
-  return { key: text, text, reveal: `${left} ${sign} ${right}`, answer: sign, options: ['<', '=', '>'] };
+  return { kind: 'compare', key: text, text, reveal: `${left} ${sign} ${right}`, answer: sign, options: ['<', '=', '>'] };
 }
 
 // «Посчитай»: count the pictures.
@@ -219,6 +234,7 @@ function countQuestion(level: number): Question {
   if (l < 4) {
     const n = rnd(...COUNT_RANGES[l]);
     return {
+      kind: 'count',
       key: `${e1}${n}`,
       text: 'Сколько?',
       reveal: `${n}`,
@@ -230,6 +246,7 @@ function countQuestion(level: number): Question {
   const a = rnd(2, 9);
   const b = rnd(2, 9);
   return {
+    kind: 'count',
     key: `${e1}${a}${e2}${b}`,
     text: 'Сколько всего?',
     reveal: `${a} + ${b} = ${a + b}`,

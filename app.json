@@ -50,7 +50,13 @@
           "backgroundColor": "#FFF7EC"
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "color": "#FF8A3D"
+        }
+      ]
     ],
     "scheme": "schetik"
   }

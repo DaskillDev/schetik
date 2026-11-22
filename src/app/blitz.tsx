@@ -3,12 +3,14 @@ import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Confetti, Hopping, PopIn } from '@/components/Anim';
 import { BackBar } from '@/components/BackBar';
+import { RestGuard } from '@/components/RestGuard';
 import { Mascot, type Mood } from '@/components/Mascot';
 import { Options, QuestionCard } from '@/components/QuestionView';
 import { Btn, C, Pill, tap } from '@/components/ui';
 import { makeQuestion, plural, type Question } from '@/lib/math';
-import { useProgress, type BlitzResult } from '@/lib/progress';
+import { useProgress, type Answer, type BlitzResult } from '@/lib/progress';
 import { playSfx, streakSfx } from '@/lib/sound';
 
 const DURATION = 60;
@@ -30,17 +32,19 @@ export default function Blitz() {
 
   if (phase === 'play') {
     return (
+      <RestGuard>
       <Game
         key={runId}
         hat={progress.hat}
-        onDone={(score, answered, bestCombo) => {
-          const res = finishBlitz(score, answered, DURATION, bestCombo);
+        onDone={(answers, bestCombo) => {
+          const res = finishBlitz(answers, DURATION, bestCombo);
           if (res.newRecord) playSfx('levelup');
-          else if (score > 0) playSfx('win');
+          else if (res.score > 0) playSfx('win');
           setResult(res);
           setPhase('done');
         }}
       />
+      </RestGuard>
     );
   }
 
@@ -50,9 +54,15 @@ export default function Blitz() {
       <View style={[s.body, { justifyContent: 'center' }]}>
         {phase === 'done' && result ? (
           <View style={s.center}>
-            <Mascot size={150} mood={result.score > 0 ? 'cheer' : 'happy'} hat={progress.hat} />
-            <Text style={s.title}>{result.newRecord ? '🏆 Новый рекорд!' : 'Время вышло!'}</Text>
-            <Text style={s.score}>{result.score}</Text>
+            <Hopping height={8} duration={500}>
+              <Mascot size={150} mood={result.score > 0 ? 'cheer' : 'happy'} hat={progress.hat} />
+            </Hopping>
+            <PopIn>
+              <Text style={s.title}>{result.newRecord ? '🏆 Новый рекорд!' : 'Время вышло!'}</Text>
+            </PopIn>
+            <PopIn delay={250}>
+              <Text style={s.score}>{result.score}</Text>
+            </PopIn>
             <Text style={s.line}>
               {plural(result.score, ['верный ответ', 'верных ответа', 'верных ответов'])} за {DURATION} секунд
             </Text>
@@ -68,7 +78,9 @@ export default function Blitz() {
           </View>
         ) : (
           <View style={s.center}>
-            <Mascot size={160} mood="happy" hat={progress.hat} />
+            <Hopping>
+              <Mascot size={160} mood="happy" hat={progress.hat} />
+            </Hopping>
             <Text style={s.title}>⚡ Молния</Text>
             <Text style={s.rules}>
               За {DURATION} секунд реши как можно больше примеров. Каждые 5 верных ответов — задания сложнее!
@@ -83,6 +95,7 @@ export default function Blitz() {
           )}
         </View>
       </View>
+      <Confetti burst={phase === 'done' && result?.newRecord ? runId : 0} />
     </SafeAreaView>
   );
 }
@@ -92,7 +105,7 @@ function Game({
   onDone,
 }: {
   hat: ReturnType<typeof useProgress>['progress']['hat'];
-  onDone: (score: number, answered: number, bestCombo: number) => void;
+  onDone: (answers: Answer[], bestCombo: number) => void;
 }) {
   const [q, setQ] = useState<Question>(() => makeQuestion('mix', 1));
   const [picked, setPicked] = useState<string | null>(null);
@@ -100,7 +113,7 @@ function Game({
   const [mood, setMood] = useState<Mood>('think');
   const [left, setLeft] = useState(DURATION);
   const startedAt = useRef(Date.now());
-  const stats = useRef({ score: 0, answered: 0, combo: 0, best: 0 });
+  const stats = useRef({ score: 0, combo: 0, best: 0, answers: [] as Answer[] });
   const done = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onDoneRef = useRef(onDone);
@@ -115,7 +128,7 @@ function Game({
         clearInterval(id);
         if (timer.current) clearTimeout(timer.current);
         const st = stats.current;
-        onDoneRef.current(st.score, st.answered, st.best);
+        onDoneRef.current(st.answers, st.best);
       }
     }, 200);
     return () => {
@@ -128,8 +141,8 @@ function Game({
     if (picked !== null || done.current) return;
     setPicked(value);
     const st = stats.current;
-    st.answered += 1;
     const right = value === q.answer;
+    st.answers.push({ q, right });
     if (right) {
       st.score += 1;
       st.combo += 1;

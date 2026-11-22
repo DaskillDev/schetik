@@ -25,5 +25,7 @@ export function achievements(p: Progress): Achievement[] {
     { id: 'master', icon: '🎓', title: 'Мастер', desc: 'Открой 5-й уровень в любой теме', value: maxed, target: 1 },
     { id: 'all', icon: '🏆', title: 'Отличник', desc: 'Открой 5-й уровень во всех темах', value: maxed, target: TOPICS.length },
     { id: 'fashion', icon: '🎩', title: 'Модник', desc: 'Собери 5 шапок', value: hats, target: 5 },
+    { id: 'home', icon: '🏠', title: 'Уютный дом', desc: 'Купи 6 вещей в комнату', value: p.decor.length, target: 6 },
+    { id: 'games', icon: '🎈', title: 'Игрок', desc: 'Сыграй во все мини-игры', value: Object.keys(p.gamesBest).length, target: 3 },
   ];
 }
