@@ -9,7 +9,7 @@ import { Options, QuestionCard } from '@/components/QuestionView';
 import { Btn, C, Pill, tap } from '@/components/ui';
 import { makeQuestion, plural, type Question } from '@/lib/math';
 import { useProgress, type BlitzResult } from '@/lib/progress';
-import { playSfx } from '@/lib/sound';
+import { playSfx, streakSfx } from '@/lib/sound';
 
 const DURATION = 60;
 const COLOR = '#FFA000';
@@ -23,6 +23,7 @@ export default function Blitz() {
   const [result, setResult] = useState<BlitzResult | null>(null);
 
   const start = () => {
+    playSfx('start');
     setRunId((n) => n + 1);
     setPhase('play');
   };
@@ -34,7 +35,8 @@ export default function Blitz() {
         hat={progress.hat}
         onDone={(score, answered, bestCombo) => {
           const res = finishBlitz(score, answered, DURATION, bestCombo);
-          if (score > 0) playSfx('win');
+          if (res.newRecord) playSfx('levelup');
+          else if (score > 0) playSfx('win');
           setResult(res);
           setPhase('done');
         }}
@@ -134,7 +136,7 @@ function Game({
       st.best = Math.max(st.best, st.combo);
       setScore(st.score);
       setMood('cheer');
-      tap('success');
+      tap('success', st.combo >= 3 ? streakSfx(st.combo) : 'correct');
     } else {
       st.combo = 0;
       setMood('oops');
@@ -153,6 +155,11 @@ function Game({
 
   const secs = Math.ceil(left);
   const hurry = secs <= 10;
+
+  // Clock ticks during the last five seconds.
+  useEffect(() => {
+    if (secs > 0 && secs <= 5) playSfx('tick');
+  }, [secs]);
 
   return (
     <SafeAreaView style={s.root}>

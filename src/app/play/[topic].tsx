@@ -7,7 +7,7 @@ import { BackBar } from '@/components/BackBar';
 import { Mascot, type Mood } from '@/components/Mascot';
 import { Options, QuestionCard } from '@/components/QuestionView';
 import { Btn, C, Pill, Stars, tap } from '@/components/ui';
-import { playSfx } from '@/lib/sound';
+import { playSfx, streakSfx } from '@/lib/sound';
 import { MAX_LEVEL, makeRound, plural, topicById, type Topic } from '@/lib/math';
 import { useProgress, type RoundResult } from '@/lib/progress';
 
@@ -105,7 +105,7 @@ function Round({
       } else {
         setMessage(PRAISE[Math.floor(Math.random() * PRAISE.length)]);
       }
-      tap('success', c === 5 || c === 10 ? 'coin' : 'correct');
+      tap('success', c >= COMBO_FROM ? streakSfx(c) : 'correct');
       Animated.sequence([
         Animated.spring(bounce, { toValue: 1.15, useNativeDriver: true, speed: 40 }),
         Animated.spring(bounce, { toValue: 1, useNativeDriver: true, speed: 20 }),
@@ -125,7 +125,8 @@ function Round({
             bonus: comboBonus.current,
             best: bestCombo.current,
           });
-          if (res.stars > 0) playSfx('win');
+          if (res.unlockedNext) playSfx('levelup');
+          else if (res.stars > 0) playSfx('win');
           setResult(res);
           return;
         }

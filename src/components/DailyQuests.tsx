@@ -37,7 +37,7 @@ export function DailyQuests() {
                 onPress={() => {
                   const res = claimQuest(q.id);
                   if (!res) return;
-                  tap('success', 'coin');
+                  tap('success', res.chest ? 'chest' : 'coin');
                   setNote(res.chest ? `Сундук открыт! +${res.reward + res.chest} 🪙` : `+${res.reward} 🪙`);
                 }}
                 style={({ pressed }) => [s.claim, { transform: [{ scale: pressed ? 0.94 : 1 }] }]}
