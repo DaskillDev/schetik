@@ -75,7 +75,7 @@ export default function Home() {
         </View>
 
         <View style={s.hero}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Счётик" onPress={() => say(text)}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Счётик" onPress={() => say(greeting('', liveStreak, playedToday))}>
             <Hopping>
               <Mascot size={140} hat={progress.hat} mood={playedToday ? 'cheer' : 'happy'} />
             </Hopping>
